@@ -6,10 +6,9 @@
 
 from __future__ import annotations
 
-import os
+import argparse
 import random
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -30,7 +29,7 @@ class DatasetManager:
         """Инициализация менеджера датасета.
 
         :param base_dir: Корневая папка для сохранения датасета.
-        :param target_per_class: Минимальное количество отзывов на каждый класс.
+        :param target_per_class: Количество отзывов для каждого класса.
         """
         self.base_dir = Path(base_dir)
         self.target_per_class = target_per_class
@@ -49,7 +48,7 @@ class DatasetManager:
             folder.mkdir(parents=True, exist_ok=True)
 
     def _sync_with_disk(self) -> None:
-        """Подсчет уже имеющихся файлов (защита от потери прогресса)."""
+        """Подсчет уже имеющихся файлов для возобновления сбора."""
         for cat in self.categories:
             folder = self.base_dir / str(cat)
             if folder.exists():
@@ -79,7 +78,6 @@ class DatasetManager:
         if review_id in self._seen_ids:
             return False
 
-        # Формирование имени файла методом zfill(4) по требованиям задания
         current_idx = self._counts[category]
         file_name = f"{str(current_idx).zfill(4)}.txt"
         file_path = self.base_dir / str(category) / file_name
@@ -117,12 +115,7 @@ class OtzovikScraper:
         dataset_manager: Optional[DatasetManager] = None,
         full_text: bool = False,
     ) -> None:
-        """Инициализация скрейпера.
-
-        :param object_slug: Идентификатор объекта на Otzovik (из URL).
-        :param dataset_manager: Экземпляр DatasetManager.
-        :param full_text: Уровень 2 (True - полный текст) или Уровень 1 (False - анонс).
-        """
+        """Инициализация скрейпера."""
         self.object_slug = object_slug
         self.manager = dataset_manager or DatasetManager()
         self.full_text = full_text
@@ -145,8 +138,8 @@ class OtzovikScraper:
             resp = self.session.get(url, timeout=12)
             if resp.status_code == 200:
                 return resp.text
-            elif resp.status_code in (403, 429):
-                print(f"[WARN] Сервер ограничил доступ ({resp.status_code}). Делаем паузу...")
+            if resp.status_code in (403, 429):
+                print(f"[WARN] Ограничение доступа ({resp.status_code}). Пауза...")
                 time.sleep(10)
             else:
                 print(f"[WARN] Код ответа сервера: {resp.status_code} для {url}")
@@ -156,14 +149,12 @@ class OtzovikScraper:
 
     def _parse_rating(self, card: BeautifulSoup) -> Optional[int]:
         """Извлечение количества звезд (1-5) из карточки отзыва."""
-        # 1. Поиск по атрибуту title="Общий рейтинг: X"
         score_tag = card.find(attrs={"title": re.compile(r"Общий рейтинг:\s*(\d+)")})
         if score_tag:
             match = re.search(r"Общий рейтинг:\s*(\d+)", score_tag["title"])
             if match:
                 return int(match.group(1))
 
-        # 2. Альтернативный поиск по словесным описаниям
         mapping = {
             "Ужасно": 1,
             "Плохо": 2,
@@ -189,11 +180,7 @@ class OtzovikScraper:
         return ""
 
     def parse_page(self, page_num: int) -> int:
-        """Парсинг одной страницы со списком отзывов.
-
-        :param page_num: Номер страницы (1, 2, ...).
-        :return: Количество сохраненных отзывов с этой страницы.
-        """
+        """Парсинг одной страницы со списком отзывов."""
         if page_num == 1:
             url = f"{self.BASE_URL}/reviews/{self.object_slug}/"
         else:
@@ -207,7 +194,6 @@ class OtzovikScraper:
         soup = BeautifulSoup(html, "lxml")
         saved_on_page = 0
 
-        # Ищем все ссылки на отзывы на странице
         review_links = soup.find_all("a", href=re.compile(r"/review_\d+\.html"))
         seen_links_on_page: Set[str] = set()
 
@@ -217,47 +203,40 @@ class OtzovikScraper:
                 continue
             seen_links_on_page.add(href)
 
-            # Извлечение уникального ID отзыва
             id_match = re.search(r"/review_(\d+)\.html", href)
             if not id_match:
                 continue
             review_id = id_match.group(1)
 
-            # Родительский контейнер всей карточки
             card = r_link.find_parent("div", class_=lambda c: c and "item" in c.split())
             if not card:
                 card = r_link.find_parent("div")
             if not card:
                 continue
 
-            # Определение рейтинга (1–5)
             rating = self._parse_rating(card)
             if not rating or rating not in (1, 2, 3, 4, 5):
                 continue
 
-            # Если квота для этой оценки уже набрана — пропускаем
             if self.manager.is_quota_filled(rating):
                 continue
 
             title = r_link.get_text(strip=True)
 
-            # Текст: Уровень 1 (краткий) или Уровень 2 (полный)
             if self.full_text:
                 full_url = urljoin(self.BASE_URL, href)
-                # Человеческая пауза перед переходом на полную страницу
-                time.sleep(random.uniform(1.2, 2.5))
+                time.sleep(random.uniform(1.0, 2.0))
                 text = self._fetch_full_review_body(full_url)
             else:
                 body_el = card.find(class_=re.compile(r"review-body|description|review-snip"))
                 text = body_el.get_text(" ", strip=True) if body_el else title
 
-            # Сохранение в файл
             if self.manager.save_review(rating, review_id, title, text):
                 saved_on_page += 1
 
         return saved_on_page
 
-    def run(self, max_pages: int = 200) -> None:
+    def run(self, max_pages: int = 500) -> None:
         """Основной цикл обхода страниц по пагинации."""
         print(f"=== Старт сбора отзывов по объекту: {self.object_slug} ===")
         self.manager.print_progress()
@@ -270,30 +249,55 @@ class OtzovikScraper:
             saved = self.parse_page(page)
             self.manager.print_progress()
 
-            # Вежливая пауза между страницами (2–4 сек), чтобы сайт не блокировал
-            delay = random.uniform(2.0, 4.0)
-            print(f"[ИНФО] Найдено и сохранено: {saved}. Пауза {delay:.1f} сек...")
+            delay = random.uniform(2.0, 3.5)
+            print(f"[ИНФО] Сохранено новых: {saved}. Пауза {delay:.1f} сек...")
             time.sleep(delay)
 
         print("\n=== Сбор завершен! Итоговая статистика: ===")
         self.manager.print_progress()
 
 
-def main() -> None:
-    """Точка входа при запуске скрипта."""
-    # Для первого тестирования установим цель, например, по 5-10 отзывов на звезду,
-    # чтобы быстро убедиться в полной работоспособности.
-    # Для полной сдачи лабораторной меняется на 500-1000.
-    TARGET_PER_CLASS = 10  # Измените на 500 для полного сбора
-    FULL_TEXT_MODE = False  # False = Уровень 1 (быстро), True = Уровень 2
-
-    manager = DatasetManager(base_dir="dataset", target_per_class=TARGET_PER_CLASS)
-    scraper = OtzovikScraper(
-        object_slug="sberbank_rossii",
-        dataset_manager=manager,
-        full_text=FULL_TEXT_MODE,
+def parse_arguments() -> argparse.Namespace:
+    """Парсер аргументов командной строки."""
+    parser = argparse.ArgumentParser(
+        description="Скрейпер отзывов сервиса Otzovik (ЛР1)."
     )
-    scraper.run(max_pages=20)
+    parser.add_argument(
+        "--slug",
+        type=str,
+        default="sberbank_rossii",
+        help="Идентификатор объекта на Otzovik (по умолчанию: sberbank_rossii)",
+    )
+    parser.add_argument(
+        "--target",
+        type=int,
+        default=500,
+        help="Целевое количество отзывов на каждый класс (по умолчанию: 500)",
+    )
+    parser.add_argument(
+        "--pages",
+        type=int,
+        default=250,
+        help="Максимальное количество страниц для обхода (по умолчанию: 250)",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Уровень 2: скачивать полный текст отзыва",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Точка входа при запуске программы."""
+    args = parse_arguments()
+    manager = DatasetManager(base_dir="dataset", target_per_class=args.target)
+    scraper = OtzovikScraper(
+        object_slug=args.slug,
+        dataset_manager=manager,
+        full_text=args.full,
+    )
+    scraper.run(max_pages=args.pages)
 
 
 if __name__ == "__main__":
