@@ -1,0 +1,21 @@
+cat << 'EOF' > .gitignore
+# Виртуальное окружение
+venv/
+.env
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Папка с датасетом (чтобы не перегружать git)
+dataset/
+!dataset/.gitkeep
+
+# IDE и системные файлы
+.vscode/
+.idea/
+.DS_Store
+*.log
+EOF
