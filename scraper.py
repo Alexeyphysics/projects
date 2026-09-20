@@ -26,11 +26,7 @@ class DatasetManager:
         base_dir: str = "dataset",
         target_per_class: int = 500
     ) -> None:
-        """Инициализация менеджера датасета.
-
-        :param base_dir: Корневая папка для сохранения датасета.
-        :param target_per_class: Количество отзывов для каждого класса.
-        """
+        """Инициализация менеджера датасета."""
         self.base_dir = Path(base_dir)
         self.target_per_class = target_per_class
         self.categories: List[int] = [1, 2, 3, 4, 5]
@@ -78,6 +74,7 @@ class DatasetManager:
         if review_id in self._seen_ids:
             return False
 
+        # Формирование имени файла методом zfill(4) по требованиям задания
         current_idx = self._counts[category]
         file_name = f"{str(current_idx).zfill(4)}.txt"
         file_path = self.base_dir / str(category) / file_name
@@ -127,7 +124,10 @@ class OtzovikScraper:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,*/*;q=0.8"
+            ),
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://otzovik.com/",
         })
@@ -139,19 +139,26 @@ class OtzovikScraper:
             if resp.status_code == 200:
                 return resp.text
             if resp.status_code in (403, 429):
-                print(f"[WARN] Ограничение доступа ({resp.status_code}). Пауза...")
+                print(
+                    f"[WARN] Ограничение доступа ({resp.status_code}). "
+                    "Пауза..."
+                )
                 time.sleep(10)
             else:
-                print(f"[WARN] Код ответа сервера: {resp.status_code} для {url}")
+                print(
+                    f"[WARN] Код ответа сервера: {resp.status_code} "
+                    f"для {url}"
+                )
         except requests.RequestException as err:
             print(f"[ERROR] Ошибка сети при запросе {url}: {err}")
         return None
 
     def _parse_rating(self, card: BeautifulSoup) -> Optional[int]:
         """Извлечение количества звезд (1-5) из карточки отзыва."""
-        score_tag = card.find(attrs={"title": re.compile(r"Общий рейтинг:\s*(\d+)")})
+        pattern = re.compile(r"Общий рейтинг:\s*(\d+)")
+        score_tag = card.find(attrs={"title": pattern})
         if score_tag:
-            match = re.search(r"Общий рейтинг:\s*(\d+)", score_tag["title"])
+            match = pattern.search(score_tag["title"])
             if match:
                 return int(match.group(1))
 
@@ -169,7 +176,7 @@ class OtzovikScraper:
         return None
 
     def _fetch_full_review_body(self, review_url: str) -> str:
-        """Получение полного текста отзыва со страницы отзыва (Уровень 2)."""
+        """Получение полного текста со страницы отзыва (Уровень 2)."""
         html = self._fetch_html(review_url)
         if not html:
             return ""
@@ -194,7 +201,9 @@ class OtzovikScraper:
         soup = BeautifulSoup(html, "lxml")
         saved_on_page = 0
 
-        review_links = soup.find_all("a", href=re.compile(r"/review_\d+\.html"))
+        review_links = soup.find_all(
+            "a", href=re.compile(r"/review_\d+\.html")
+        )
         seen_links_on_page: Set[str] = set()
 
         for r_link in review_links:
@@ -208,7 +217,9 @@ class OtzovikScraper:
                 continue
             review_id = id_match.group(1)
 
-            card = r_link.find_parent("div", class_=lambda c: c and "item" in c.split())
+            card = r_link.find_parent(
+                "div", class_=lambda c: c and "item" in c.split()
+            )
             if not card:
                 card = r_link.find_parent("div")
             if not card:
@@ -228,7 +239,9 @@ class OtzovikScraper:
                 time.sleep(random.uniform(1.0, 2.0))
                 text = self._fetch_full_review_body(full_url)
             else:
-                body_el = card.find(class_=re.compile(r"review-body|description|review-snip"))
+                body_el = card.find(
+                    class_=re.compile(r"review-body|description|review-snip")
+                )
                 text = body_el.get_text(" ", strip=True) if body_el else title
 
             if self.manager.save_review(rating, review_id, title, text):
@@ -238,7 +251,7 @@ class OtzovikScraper:
 
     def run(self, max_pages: int = 500) -> None:
         """Основной цикл обхода страниц по пагинации."""
-        print(f"=== Старт сбора отзывов по объекту: {self.object_slug} ===")
+        print(f"=== Сбор отзывов по объекту: {self.object_slug} ===")
         self.manager.print_progress()
 
         for page in range(1, max_pages + 1):
@@ -250,7 +263,10 @@ class OtzovikScraper:
             self.manager.print_progress()
 
             delay = random.uniform(2.0, 3.5)
-            print(f"[ИНФО] Сохранено новых: {saved}. Пауза {delay:.1f} сек...")
+            print(
+                f"[ИНФО] Сохранено новых: {saved}. "
+                f"Пауза {delay:.1f} сек..."
+            )
             time.sleep(delay)
 
         print("\n=== Сбор завершен! Итоговая статистика: ===")
@@ -266,19 +282,19 @@ def parse_arguments() -> argparse.Namespace:
         "--slug",
         type=str,
         default="sberbank_rossii",
-        help="Идентификатор объекта на Otzovik (по умолчанию: sberbank_rossii)",
+        help="Идентификатор объекта на Otzovik",
     )
     parser.add_argument(
         "--target",
         type=int,
         default=500,
-        help="Целевое количество отзывов на каждый класс (по умолчанию: 500)",
+        help="Количество отзывов на класс (по умолчанию: 500)",
     )
     parser.add_argument(
         "--pages",
         type=int,
         default=250,
-        help="Максимальное количество страниц для обхода (по умолчанию: 250)",
+        help="Количество страниц для обхода (по умолчанию: 250)",
     )
     parser.add_argument(
         "--full",
